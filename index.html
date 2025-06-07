@@ -1,1 +1,395 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>MediaWiki疑似ビジュアルエディタ</title>
+<style>
+#editor { border: 1px solid #ccc; min-height: 200px; padding: 0.5em; position: relative; }
+#toolbar { margin-bottom: 0.5em; }
+#toolbar button { margin-right: 0.2em; }
+body { font-family: sans-serif; padding: 1em; }
+#output { width: 100%; height: 200px; margin-top: 1em; }
+.wikitable, .wikitable th, .wikitable td {
+  border: 1px solid #666;
+  border-collapse: collapse;
+}
+.wikitable th, .wikitable td {
+  padding: 4px;
+}
+.image-placeholder {
+  background: #eee;
+  border: 1px dashed #999;
+  color: #666;
+  display: inline-block;
+  text-align: center;
+  overflow: hidden;
+  font-size: 12px;
+}
+.dialog { position:fixed; top:20%; left:50%; transform:translateX(-50%); background:#fff; border:1px solid #ccc; padding:10px; z-index:1000; display:none; }
+#cellMenu {
+  margin-top: 0.5em;
+  border: 1px solid #666;
+  padding: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+#cellMenu button { margin:2px; }
+</style>
+</head>
+<body>
+<h1>MediaWiki疑似ビジュアルエディタ</h1>
+<div id="toolbar">
+  <button onclick="document.execCommand('bold',false,null)"><b>B</b></button>
+  <button onclick="document.execCommand('italic',false,null)"><i>I</i></button>
+  <button onclick="formatBlock('h1')">H1</button>
+  <button onclick="formatBlock('h2')">H2</button>
+  <button onclick="formatBlock('h3')">H3</button>
+  <button onclick="formatBlock('h4')">H4</button>
+  <button onclick="formatBlock('h5')">H5</button>
+  <button onclick="formatBlock('h6')">H6</button>
+  <button onclick="insertList('ul')">&#8226; List</button>
+  <button onclick="insertList('ol')">1. List</button>
+  <button onclick="document.execCommand('indent',false,null)">&rarr;</button>
+  <button onclick="document.execCommand('outdent',false,null)">&larr;</button>
+  <button onclick="insertLink()">Link</button>
+  <button onclick="showImageDialog()">Image</button>
+  <button onclick="insertPre()">Pre</button>
+  <button onclick="insertBlockQuote()">Quote</button>
+  <button onclick="showTableDialog()">Table</button>
+  <button onclick="generate()">Wikiコード生成</button>
+</div>
+<div id="editor" contenteditable="true"></div>
+<textarea id="output" placeholder="ここにWikiコードが出力されます" readonly></textarea>
 
+<div id="imageDialog" class="dialog">
+  <div>ファイル名: <input id="imgName"></div>
+  <div>キャプション: <input id="imgCaption"></div>
+  <div>幅(px): <input id="imgWidth" type="number" style="width:60px;"> × 高さ(px): <input id="imgHeight" type="number" style="width:60px;"></div>
+  <div>テキスト折り返し:
+    <select id="imgWrap">
+      <option value="">オン</option>
+      <option value="none">オフ</option>
+    </select>
+  </div>
+  <div>位置:
+    <select id="imgAlign">
+      <option value="">--</option>
+      <option value="left">左寄せ</option>
+      <option value="center">中央寄せ</option>
+      <option value="right">右寄せ</option>
+    </select>
+  </div>
+  <div>タイプ:
+    <select id="imgType">
+      <option value="サムネイル">サムネイル</option>
+      <option value="フレームなし">フレームなし</option>
+      <option value="フレーム">フレーム</option>
+      <option value="基本">基本</option>
+    </select>
+  </div>
+  <div>境界線:
+    <select id="imgBorder">
+      <option value="">オフ</option>
+      <option value="border">オン</option>
+    </select>
+  </div>
+  <button onclick="applyImage()">OK</button>
+  <button onclick="closeImageDialog()">Cancel</button>
+</div>
+
+<div id="tableDialog" class="dialog">
+  <div>キャプション: <input id="tblCaption"></div>
+  <div>行数: <input id="tblRows" type="number" value="2" style="width:60px;"> 列数: <input id="tblCols" type="number" value="2" style="width:60px;"></div>
+  <button onclick="createTable()">挿入</button>
+  <button onclick="closeTableDialog()">Cancel</button>
+</div>
+
+<div id="cellMenu"></div>
+
+<script>
+function formatBlock(tag){ document.execCommand('formatBlock', false, tag); }
+function insertList(type){ document.execCommand(type === 'ul' ? 'insertUnorderedList':'insertOrderedList'); }
+function insertLink(){
+  var type = prompt('リンク種別: wiki / http', 'wiki');
+  if(!type) return;
+  var target = prompt(type==='wiki' ? 'ページ名' : 'URL');
+  if(!target) return;
+  var text = prompt('表示テキスト', target);
+  if(type==='wiki'){
+    var a = document.createElement('a');
+    a.href = '/wiki/' + encodeURIComponent(target);
+    a.textContent = text;
+    a.setAttribute('data-wiki','true');
+    document.execCommand('insertHTML', false, a.outerHTML);
+  }else{
+    var a = '<a href="'+target+'">'+text+'</a>';
+    document.execCommand('insertHTML', false, a);
+  }
+}
+
+function parseImageOptions(str){
+  var opts = {align:null,width:null,height:null,frame:false,border:false,nowrap:false};
+  if(!str) return opts;
+  str.split('|').forEach(function(o){
+    o = o.trim();
+    if(/^(\d+)(px|ピクセル)?$/.test(o)){ opts.width = RegExp.$1; }
+    else if(/^(\d+)x(\d+)(px|ピクセル)?$/.test(o)){ opts.width=RegExp.$1; opts.height=RegExp.$2; }
+    else if(o.indexOf('左')>-1){ opts.align='left'; }
+    else if(o.indexOf('右')>-1){ opts.align='right'; }
+    else if(o.indexOf('中央')>-1){ opts.align='center'; }
+    if(o.indexOf('フレーム')>-1) opts.frame=true;
+    if(o.indexOf('境界')>-1) opts.border=true;
+    if(o.indexOf('なし')>-1) opts.nowrap=true;
+  });
+  return opts;
+}
+
+function showImageDialog(){ document.getElementById('imageDialog').style.display='block'; }
+function closeImageDialog(){ document.getElementById('imageDialog').style.display='none'; }
+function applyImage(){
+  var name = document.getElementById('imgName').value.trim();
+  if(!name) return;
+  var caption = document.getElementById('imgCaption').value.trim() || 'キャプション';
+  var opts = [];
+  var type = document.getElementById('imgType').value;
+  if(type) opts.push(type);
+  var align = document.getElementById('imgAlign').value;
+  if(align==='left') opts.push('左寄せ');
+  else if(align==='right') opts.push('右寄せ');
+  else if(align==='center') opts.push('中央寄せ');
+  var wrap = document.getElementById('imgWrap').value;
+  if(wrap==='none') opts.push('なし');
+  var border = document.getElementById('imgBorder').value;
+  if(border==='border') opts.push('境界');
+  var w = document.getElementById('imgWidth').value;
+  var h = document.getElementById('imgHeight').value;
+  if(w && h) opts.push(w+'x'+h+'ピクセル');
+  else if(w) opts.push(w+'px');
+  var optionStr = opts.length? opts.join('|') : 'サムネイル';
+  var opt = parseImageOptions(optionStr);
+  var span = document.createElement('span');
+  span.className='image-placeholder';
+  span.textContent=caption;
+  span.setAttribute('data-name', name);
+  span.setAttribute('data-options', optionStr);
+  span.setAttribute('data-caption', caption);
+  span.style.width = (opt.width||150)+'px';
+  span.style.height = (opt.height||150)+'px';
+  span.style.lineHeight = span.style.height;
+  if(opt.frame) span.style.border='2px solid #666';
+  else if(opt.border) span.style.border='1px solid #666';
+  if(opt.align==='left') span.style.float='left';
+  else if(opt.align==='right') span.style.float='right';
+  else if(opt.align==='center'){ span.style.display='block'; span.style.margin='0 auto'; }
+  if(opt.nowrap){ span.style.float='none'; span.style.display='inline-block'; }
+
+  var sel=window.getSelection();
+  if(!sel.rangeCount) return;
+  var range=sel.getRangeAt(0);
+  var rect=range.getBoundingClientRect();
+  var ed=document.getElementById('editor').getBoundingClientRect();
+  span.style.position='absolute';
+  span.style.left=(rect.left-ed.left)+'px';
+  span.style.top=(rect.top-ed.top)+'px';
+  range.insertNode(span);
+  range.setStartAfter(span);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  closeImageDialog();
+}
+
+function insertPre(){ document.execCommand('formatBlock', false, 'pre'); }
+function insertBlockQuote(){ document.execCommand('formatBlock', false, 'blockquote'); }
+
+function showTableDialog(){ document.getElementById('tableDialog').style.display='block'; }
+function closeTableDialog(){ document.getElementById('tableDialog').style.display='none'; }
+function createTable(){
+  var rows=parseInt(document.getElementById('tblRows').value)||1;
+  var cols=parseInt(document.getElementById('tblCols').value)||1;
+  var caption=document.getElementById('tblCaption').value;
+  var table=document.createElement('table');
+  table.setAttribute('contenteditable','false');
+  table.className='wikitable';
+  if(caption){ var cap=document.createElement('caption'); cap.textContent=caption; table.appendChild(cap); }
+  for(var r=0;r<rows;r++){
+    var tr=document.createElement('tr');
+    for(var c=0;c<cols;c++){
+      var cell=document.createElement(r==0?'th':'td');
+      cell.setAttribute('contenteditable','true');
+      cell.innerHTML='';
+      tr.appendChild(cell);
+    }
+    table.appendChild(tr);
+  }
+  document.execCommand('insertHTML', false, table.outerHTML);
+  closeTableDialog();
+}
+
+var currentCell=null;
+var cellMenu=document.getElementById('cellMenu');
+
+function buildCellMenu(){
+  cellMenu.innerHTML='';
+  var labels=['ヘッダー/データ切替','右と結合','下と結合','結合解除','上に行挿入','下に行挿入','左に列挿入','右に列挿入','行を上へ','行を下へ','列を左へ','列を右へ','行削除','列削除','表削除'];
+  var funcs=[toggleHeader,mergeRight,mergeDown,splitCell,rowAbove,rowBelow,colLeft,colRight,rowUp,rowDown,colMoveLeft,colMoveRight,delRow,delCol,delTable];
+  labels.forEach(function(label,idx){
+    var b=document.createElement('button');
+    b.textContent=label;
+    b.onclick=funcs[idx];
+    cellMenu.appendChild(b);
+  });
+}
+buildCellMenu();
+
+document.getElementById('editor').addEventListener('click',function(e){
+  var c=e.target.closest('td,th');
+  if(c&&c.closest('table')){
+    currentCell=c;
+  }
+});
+
+function toggleHeader(){ if(!currentCell) return; var newCell=document.createElement(currentCell.tagName==='TH'?'td':'th'); newCell.innerHTML=currentCell.innerHTML; newCell.contentEditable='true'; currentCell.parentNode.replaceChild(newCell,currentCell); currentCell=newCell; }
+function mergeRight(){
+  if(!currentCell) return;
+  var n=currentCell.nextElementSibling;
+  if(n){
+    currentCell.colSpan=(currentCell.colSpan||1)+(n.colSpan||1);
+    if(n.innerHTML) currentCell.innerHTML += '<br>' + n.innerHTML;
+    n.remove();
+  }
+}
+function mergeDown(){
+  if(!currentCell) return;
+  var row=currentCell.parentNode;
+  var idx=currentCell.cellIndex;
+  var next=row.nextElementSibling;
+  if(next){
+    var n=next.children[idx];
+    if(n){
+      currentCell.rowSpan=(currentCell.rowSpan||1)+(n.rowSpan||1);
+      if(n.innerHTML) currentCell.innerHTML += '<br>' + n.innerHTML;
+      n.remove();
+      if(next.children.length==0) next.remove();
+    }
+  }
+}
+function rowAbove(){ if(!currentCell) return; var row=currentCell.parentNode; var table=row.parentNode; var newRow=row.cloneNode(false); for(var i=0;i<row.children.length;i++){ var nc=row.children[i].cloneNode(false); nc.innerHTML=''; nc.removeAttribute('rowspan'); nc.removeAttribute('colspan'); nc.contentEditable='true'; newRow.appendChild(nc); } table.insertBefore(newRow,row); }
+function rowBelow(){ if(!currentCell) return; var row=currentCell.parentNode; var table=row.parentNode; var newRow=row.cloneNode(false); for(var i=0;i<row.children.length;i++){ var nc=row.children[i].cloneNode(false); nc.innerHTML=''; nc.removeAttribute('rowspan'); nc.removeAttribute('colspan'); nc.contentEditable='true'; newRow.appendChild(nc); } if(row.nextSibling) table.insertBefore(newRow,row.nextSibling); else table.appendChild(newRow); }
+function colLeft(){ if(!currentCell) return; var table=currentCell.closest('table'); var idx=currentCell.cellIndex; Array.from(table.rows).forEach(function(r){ var ref=r.children[idx]; var nc=ref.cloneNode(false); nc.innerHTML=''; nc.removeAttribute('rowspan'); nc.removeAttribute('colspan'); nc.contentEditable='true'; r.insertBefore(nc,ref); }); }
+function colRight(){ if(!currentCell) return; var table=currentCell.closest('table'); var idx=currentCell.cellIndex; Array.from(table.rows).forEach(function(r){ var ref=r.children[idx]; var nc=ref.cloneNode(false); nc.innerHTML=''; nc.removeAttribute('rowspan'); nc.removeAttribute('colspan'); nc.contentEditable='true'; if(ref.nextSibling) r.insertBefore(nc,ref.nextSibling); else r.appendChild(nc); }); }
+function rowUp(){ if(!currentCell) return; var row=currentCell.parentNode; if(row.previousElementSibling) row.parentNode.insertBefore(row,row.previousElementSibling); }
+function rowDown(){ if(!currentCell) return; var row=currentCell.parentNode; if(row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling,row); }
+function colMoveLeft(){ if(!currentCell) return; var table=currentCell.closest('table'); var idx=currentCell.cellIndex; if(idx==0) return; Array.from(table.rows).forEach(function(r){ var cells=r.children; r.insertBefore(cells[idx],cells[idx-1]); }); }
+function colMoveRight(){ if(!currentCell) return; var table=currentCell.closest('table'); var idx=currentCell.cellIndex; Array.from(table.rows).forEach(function(r){ var cells=r.children; if(idx<cells.length-1) r.insertBefore(cells[idx+1],cells[idx]); }); }
+function delRow(){ if(!currentCell) return; var row=currentCell.parentNode; row.remove(); }
+function delCol(){ if(!currentCell) return; var idx=currentCell.cellIndex; var table=currentCell.closest('table'); Array.from(table.rows).forEach(function(r){ if(r.children[idx]) r.children[idx].remove(); }); }
+
+function splitCell(){
+  if(!currentCell) return;
+  var rs=currentCell.rowSpan||1;
+  var cs=currentCell.colSpan||1;
+  var table=currentCell.closest('table');
+  var row=currentCell.parentNode;
+  var rowIndex=row.rowIndex;
+  var cellIndex=currentCell.cellIndex;
+  currentCell.rowSpan=1;
+  currentCell.colSpan=1;
+  for(var i=1;i<cs;i++){
+    var nc=currentCell.cloneNode(false);
+    nc.innerHTML='';
+    nc.contentEditable='true';
+    row.insertBefore(nc,currentCell.nextSibling);
+  }
+  for(var r=1;r<rs;r++){
+    var tr=table.rows[rowIndex+r];
+    if(!tr) break;
+    var nc=currentCell.cloneNode(false);
+    nc.innerHTML='';
+    nc.contentEditable='true';
+    tr.insertBefore(nc,tr.children[cellIndex]);
+  }
+}
+
+function delTable(){
+  if(!currentCell) return;
+  var t=currentCell.closest('table');
+  if(t) t.remove();
+  currentCell=null;
+}
+
+function htmlToWiki(html){
+  const wrap=document.createElement('div');
+  wrap.innerHTML=html;
+
+  function walk(node,depth){
+    let out='';
+    node.childNodes.forEach(n=>{
+      if(n.nodeType===3){ out+=n.nodeValue; }
+      else if(n.nodeType===1){
+        const tag=n.tagName.toUpperCase();
+        switch(tag){
+          case 'BR': out+='\n'; break;
+          case 'B':
+          case 'STRONG': out+="'''"+walk(n,depth)+"'''"; break;
+          case 'I':
+          case 'EM': out+="''"+walk(n,depth)+"''"; break;
+          case 'PRE': out+=n.textContent.split('\n').map(l=>' '+l).join('\n')+'\n'; break;
+          case 'BLOCKQUOTE': out+=n.textContent.split('\n').map(l=>'> '+l).join('\n')+'\n'; break;
+          case 'H1': out+='= '+walk(n,depth)+' =\n'; break;
+          case 'H2': out+='== '+walk(n,depth)+' ==\n'; break;
+          case 'H3': out+='=== '+walk(n,depth)+' ===\n'; break;
+          case 'H4': out+='==== '+walk(n,depth)+' ====\n'; break;
+          case 'H5': out+='===== '+walk(n,depth)+' =====\n'; break;
+          case 'H6': out+='====== '+walk(n,depth)+' ======\n'; break;
+          case 'UL': Array.from(n.children).forEach(li=>{ out+=listItem(li,'*',depth+1); }); break;
+          case 'OL': Array.from(n.children).forEach(li=>{ out+=listItem(li,'#',depth+1); }); break;
+          case 'A': const href=n.getAttribute('href')||''; const text=walk(n,depth); if(n.dataset.wiki){const page=decodeURIComponent(href.replace(/^\/wiki\//,'')); if(text===page) out+='[['+page+']]'; else out+='[['+page+'|'+text+']]';} else { out+='['+href+' '+text+']'; } break;
+          case 'IMG': const name=n.getAttribute('data-name')||n.getAttribute('src'); const opt=n.getAttribute('data-options')||'サムネイル'; const cap=n.getAttribute('alt')||'キャプション'; out+='[[ファイル:'+name+'|'+opt+'|'+cap+']]\n'; break;
+          case 'SPAN': if(n.classList.contains('image-placeholder')){ const nname=n.getAttribute('data-name'); const oopt=n.getAttribute('data-options')||'サムネイル'; const ccap=n.getAttribute('data-caption')||n.textContent; out+='[[ファイル:'+nname+'|'+oopt+'|'+ccap+']]\n'; } else { out+=walk(n,depth); } break;
+          case 'TABLE': out+=tableToWiki(n); break;
+          case 'DIV': if(n.textContent.startsWith('カテゴリ:')){ out+='[[カテゴリ:'+n.textContent.replace(/^カテゴリ:/,'')+']]\n'; } else { out+=walk(n,depth)+'\n'; } break;
+          case 'P': out+=walk(n,depth)+'\n'; break;
+          default: out+=walk(n,depth);
+        }
+      }
+    });
+    return out;
+  }
+
+  function listItem(li,mark,depth){
+    let text='';
+    li.childNodes.forEach(ch=>{ if(ch.tagName==='UL') text+=Array.from(ch.children).map(sli=>listItem(sli,'*',depth+1)).join(''); else if(ch.tagName==='OL') text+=Array.from(ch.children).map(sli=>listItem(sli,'#',depth+1)).join(''); else text+=walk(ch,depth); });
+    return mark.repeat(depth)+' '+text.trim()+'\n';
+  }
+
+  function tableToWiki(tbl){
+    let out='{| class="wikitable"\n';
+    const cap=tbl.querySelector('caption');
+    if(cap) out+='|+'+walk(cap,0).trim()+'\n';
+    Array.from(tbl.rows).forEach(tr=>{
+      out+='|-\n';
+      Array.from(tr.cells).forEach(cell=>{
+        const prefix=cell.tagName==='TH'?'!':'|';
+        let attrs=[];
+        if(cell.colSpan>1) attrs.push('colspan="'+cell.colSpan+'"');
+        if(cell.rowSpan>1) attrs.push('rowspan="'+cell.rowSpan+'"');
+        if(attrs.length) out+=prefix+' '+attrs.join(' ')+' | '+walk(cell,0).trim()+'\n';
+        else out+=prefix+walk(cell,0).trim()+'\n';
+      });
+    });
+    out+='|}\n';
+    return out;
+  }
+
+  return walk(wrap,0);
+}
+
+function generate(){
+  const html=document.getElementById('editor').innerHTML;
+  document.getElementById('output').value=htmlToWiki(html);
+}
+</script>
+</body>
+</html>
